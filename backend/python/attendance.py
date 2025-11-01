@@ -1,6 +1,7 @@
 # imports
-import os
+from deepface import DeepFace
 import cv2
+import os
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -8,12 +9,8 @@ from deepface import DeepFace
 import warnings
 warnings.filterwarnings('ignore')
 
-
-# ===============================
-# CONFIGURATION
-# ===============================
 class Config:
-    BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+    BASE_DIR = os.path.abspath(os.path.dirname(__file__)) #Get the directory of the current file(python folder)
     UPLOADS_DIR = f"{BASE_DIR}/uploads"
     KNOWN_FACES_DIR = f"{BASE_DIR}/known_faces"
     ATTENDANCE_FILE = f"{BASE_DIR}/attendance.xlsx"
@@ -28,9 +25,9 @@ class FaceRecognition:
         self.known_faces = []
         self._setup_folders()
         self._load_known_faces()
-
+        
     def _setup_folders(self):
-        os.makedirs(self.cfg.UPLOADS_DIR, exist_ok=True)
+        os.makedirs(self.cfg.UPLOADS_DIR, exist_ok=True) 
         os.makedirs(self.cfg.KNOWN_FACES_DIR, exist_ok=True)
 
     def _load_known_faces(self):
