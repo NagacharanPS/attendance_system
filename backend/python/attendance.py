@@ -3,7 +3,6 @@ import os
 import cv2
 import numpy as np
 import pandas as pd
-import pickle
 from datetime import datetime
 import warnings
 import sys
@@ -25,6 +24,20 @@ except ImportError:
     DEEPFACE_AVAILABLE = True
 
 # ===============================
+# STYLE CLASS (For Attractive Output)
+# ===============================
+class Style:
+    HEADER = '\033[95m'
+    BLUE = '\033[94m'
+    CYAN = '\033[96m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
+# ===============================
 # CONFIGURATION
 # ===============================
 class Config:
@@ -32,17 +45,11 @@ class Config:
     UPLOADS_DIR = os.path.join(BASE_DIR, 'uploads')
     KNOWN_FACES_DIR = os.path.join(BASE_DIR, 'known_faces')
     ATTENDANCE_FILE = os.path.join(BASE_DIR, 'attendance.xlsx')
-    DB_FILE = os.path.join(BASE_DIR, 'known_faces_encodings.pkl')
-
-    # Facenet512 is accurate.
+    
+    # Removed DB_FILE since we are not using cache anymore
+    
     MODEL_NAME = "Facenet512" 
-    
-    # --- FIX 1: CHANGE DETECTOR ---
-    # 'opencv' is too glitchy (sees faces in walls).
-    # 'ssd' is much more stable and still fast.
     DETECTOR_BACKEND = "ssd" 
-    
-    # Similarity Threshold (0.80 - 0.85 is good for Facenet512)
     SIMILARITY_THRESHOLD = 0.80
 
 class FaceRecognitionEngine:
@@ -50,43 +57,39 @@ class FaceRecognitionEngine:
         self.config = config
         self.known_faces_db = []
         self._ensure_directories()
-        self._load_or_build_database()
+        self._load_faces_directly() # Changed from _load_or_build
     
     def _ensure_directories(self):
         os.makedirs(self.config.UPLOADS_DIR, exist_ok=True)
         os.makedirs(self.config.KNOWN_FACES_DIR, exist_ok=True)
     
-    def _load_or_build_database(self):
-        if os.path.exists(self.config.DB_FILE):
-            print(f"⚡ Loading database from cache...")
-            try:
-                with open(self.config.DB_FILE, 'rb') as f:
-                    self.known_faces_db = pickle.load(f)
-                print(f"✅ Loaded {len(self.known_faces_db)} known people.")
-                return
-            except Exception:
-                print(f"⚠️ Cache corrupted. Rebuilding...")
-
-        self._build_known_faces_database()
-
-    def _build_known_faces_database(self):
-        print("🔨 Building known faces database...")
-        new_db = []
+    def _load_faces_directly(self):
+        """
+        Loads faces directly from the 'known_faces' folder every time.
+        No caching involved.
+        """
+        print(f"{Style.CYAN}📂 Scanning 'known_faces' directory for profiles...{Style.ENDC}")
+        
+        self.known_faces_db = []
         
         if not os.path.exists(self.config.KNOWN_FACES_DIR):
+            print(f"{Style.RED}❌ Error: 'known_faces' directory is missing.{Style.ENDC}")
             return
         
+        profiles_found = 0
+        
+        # Iterate over folders in known_faces
         for person_name in os.listdir(self.config.KNOWN_FACES_DIR):
             person_path = os.path.join(self.config.KNOWN_FACES_DIR, person_name)
             
             if os.path.isdir(person_path):
-                print(f"  👤 Encoding: {person_name}")
+                # print(f"   👤 Processing: {person_name}...") # Optional: Uncomment to see every name
+                
                 for filename in os.listdir(person_path):
                     if filename.lower().endswith(('.jpg', '.jpeg', '.png')):
                         img_path = os.path.join(person_path, filename)
                         try:
-                            # We use enforce_detection=False here just to ensure we capture
-                            # the known faces even if the crop is weird.
+                            # Generate embedding fresh from the image
                             embeddings = DeepFace.represent(
                                 img_path=img_path,
                                 model_name=self.config.MODEL_NAME,
@@ -95,17 +98,16 @@ class FaceRecognitionEngine:
                                 align=True
                             )
                             for emb in embeddings:
-                                new_db.append({
+                                self.known_faces_db.append({
                                     'name': person_name,
                                     'embedding': emb['embedding']
                                 })
                         except:
                             pass
+                profiles_found += 1
         
-        self.known_faces_db = new_db
-        with open(self.config.DB_FILE, 'wb') as f:
-            pickle.dump(self.known_faces_db, f)
-        print(f"✅ Database built and saved.")
+        print(f"{Style.GREEN}✅ Biometric Database Ready: {len(self.known_faces_db)} face encodings loaded from disk.{Style.ENDC}")
+        print("-" * 50)
 
     def find_latest_uploaded_image(self):
         files = [f for f in os.listdir(self.config.UPLOADS_DIR) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
@@ -115,12 +117,9 @@ class FaceRecognitionEngine:
         return os.path.join(self.config.UPLOADS_DIR, files[0])
 
     def recognize_faces(self, image_path):
-        print(f"⚙️  Analyzing image: {os.path.basename(image_path)}")
+        print(f"{Style.BOLD}⚙️  Processing Image: {os.path.basename(image_path)}...{Style.ENDC}")
         
         try:
-            # --- FIX 2: ENFORCE DETECTION = TRUE ---
-            # This ensures that if no face is found, it throws an error immediately
-            # instead of trying to process the wall/chair as a face.
             target_embeddings = DeepFace.represent(
                 img_path=image_path,
                 model_name=self.config.MODEL_NAME,
@@ -129,24 +128,22 @@ class FaceRecognitionEngine:
                 align=True
             )
         except ValueError:
-            # This catches "Face could not be detected"
-            print("⚠️  No face detected in the image.")
+            print(f"{Style.YELLOW}⚠️  Alert: No human faces detected in the provided image.{Style.ENDC}")
             return []
         except Exception as e:
-            print(f"⚠️  Error during detection: {e}")
+            print(f"{Style.RED}❌ Error during detection: {e}{Style.ENDC}")
             return []
 
         results = []
+        print(f"{Style.CYAN}   🔍 Analyzing detected faces...{Style.ENDC}")
+        
         for face_data in target_embeddings:
             name, confidence = self._match_face(face_data['embedding'])
             
-            # --- LOGGING ---
             if name == "Unknown":
-                # We do NOT add unknowns to the results list we return
-                # So they are completely ignored.
-                print(f"  ⛔ Unknown Face Detected (Score: {confidence:.2%}) -> IGNORING")
+                print(f"   ⛔ Unknown Subject Detected (Match Score: {confidence:.2%}) -> {Style.RED}IGNORED{Style.ENDC}")
             else:
-                print(f"  ✅ MATCH FOUND: {name} (Score: {confidence:.2%})")
+                print(f"   ✅ {Style.GREEN}MATCH FOUND: {name}{Style.ENDC} (Match Score: {confidence:.2%})")
                 results.append({'name': name, 'confidence': confidence})
 
         return results
@@ -173,8 +170,9 @@ class FaceRecognitionEngine:
         return best_name, best_score
 
     def mark_attendance(self, recognized_faces):
+        print("-" * 50)
         if not recognized_faces:
-            print("ℹ️  No valid attendance to mark.")
+            print(f"{Style.BLUE}ℹ️  Status: No valid attendance entries to record.{Style.ENDC}")
             return 0
             
         if os.path.exists(self.config.ATTENDANCE_FILE):
@@ -201,31 +199,36 @@ class FaceRecognitionEngine:
                 }])
                 df = pd.concat([df, new_entry], ignore_index=True)
                 count += 1
-                print(f"  📝 Attendance Marked: {name}")
+                print(f"   📝 {Style.GREEN}Attendance Recorded: {name}{Style.ENDC}")
             else:
-                print(f"  ℹ️  {name} is already marked for today.")
+                print(f"   ℹ️  {name} is already marked for today.")
         
         df.to_excel(self.config.ATTENDANCE_FILE, index=False)
         return count
 
 def main():
-    print("🚀 Starting AI Attendance...")
+    print("\n" + "="*50)
+    print(f"{Style.HEADER}🚀 Initializing AI Attendance System...{Style.ENDC}")
+    print("="*50)
+    
     try:
         engine = FaceRecognitionEngine(Config())
         try:
             img_path = engine.find_latest_uploaded_image()
         except FileNotFoundError:
-            print("❌ No images in 'uploads' folder.")
+            print(f"{Style.RED}❌ Error: No images found in 'uploads' directory.{Style.ENDC}")
             return
 
-        # recognized_faces will be empty if no face is found
         recognized_faces = engine.recognize_faces(img_path)
         
         engine.mark_attendance(recognized_faces)
-        print("✅ Done.")
+        
+        print("-" * 50)
+        print(f"{Style.GREEN}✅ Workflow Completed Successfully.{Style.ENDC}")
+        print("="*50 + "\n")
             
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"{Style.RED}❌ Critical Error: {e}{Style.ENDC}")
 
 if __name__ == "__main__":
     main()
