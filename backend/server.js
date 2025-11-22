@@ -1,4 +1,3 @@
-// backend/server.js
 const express = require("express");
 const multer = require("multer");
 const cors = require("cors");
@@ -9,6 +8,7 @@ const { spawn } = require("child_process");
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Ensure upload directory exists
 const UPLOAD_DIR = path.join(__dirname, "python", "uploads");
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
@@ -23,239 +23,150 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
+// Helper to remove ANSI color codes from Python output
+const stripAnsi = (str) =>
+  str.replace(
+    /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g,
+    ""
+  );
+
 app.post("/upload", upload.single("photo"), (req, res) => {
   if (!req.file)
     return res
       .status(400)
       .json({ success: false, message: "No file uploaded" });
 
-  const savedPath = path.join(UPLOAD_DIR, req.file.filename);
-  console.log("✅ File received:", savedPath);
-
   const pythonExec =
     process.env.PYTHON || (process.platform === "win32" ? "python" : "python3");
-
   const pythonScriptPath = path.join(__dirname, "python", "attendance.py");
 
-  // Force unbuffered mode and UTF-8 environment
   const env = { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" };
+
   const pythonProcess = spawn(
     pythonExec,
     ["-u", pythonScriptPath, req.file.filename],
     { env }
   );
 
-  let pythonOutput = "";
+  let rawOutput = "";
   let pythonError = "";
 
   pythonProcess.stdout.on("data", (data) => {
     const text = data.toString();
-    pythonOutput += text;
-    // also log to Node console for debugging
-    process.stdout.write("Python stdout: " + text);
+    rawOutput += text;
+    process.stdout.write(text); // Log to node terminal for debugging
   });
 
   pythonProcess.stderr.on("data", (data) => {
     const text = data.toString();
     pythonError += text;
-    process.stderr.write("Python stderr: " + text);
+    process.stderr.write(text);
   });
 
   pythonProcess.on("close", (code) => {
-    console.log("Python script finished with code:", code);
-    // keep a copy of the full raw output in logs
-    console.log("Full Python output:", pythonOutput);
+    // 1. Clean the output (remove colors)
+    const cleanOutput = stripAnsi(rawOutput);
+    const lines = cleanOutput.split("\n");
 
-    // If python failed, return both stdout & stderr and code
-    if (code !== 0) {
-      console.error("Python script failed with error:", pythonError);
-      return res.status(500).json({
-        success: false,
-        status: "internal_error",
-        message:
-          "Internal server error during image processing. See python_error for details.",
-        python_output: pythonOutput,
-        python_error: pythonError,
-        exit_code: code,
-        filename: req.file.filename,
-      });
-    }
+    // 2. Initialize trackers
+    const newAttendance = [];
+    const alreadyMarked = [];
+    let unknownCount = 0;
+    let noFaceDetected = false;
 
-    // --- Keep your existing parsing logic (unchanged) ---
-    const includesPhrase = (hay, phraseVariants) =>
-      phraseVariants.some((p) => hay.includes(p));
+    // 3. Parse line by line
+    lines.forEach((line) => {
+      const trimmed = line.trim();
 
-    const markedVariants = [
-      "✅ Attendance marked successfully for",
-      "Attendance marked successfully for",
-    ];
-    const alreadyMarkedVariants = [
-      "attendance is already marked for today",
-      "already marked for today",
-    ];
-    const unknownVariant = [
-      "❓ Unknown face detected",
-      "Unknown face detected",
-    ];
-    const noFaceVariant = [
-      "⚠️ No faces detected",
-      "No faces detected",
-      "No face detected",
-    ];
-
-    // If marked
-    if (includesPhrase(pythonOutput, markedVariants)) {
-      const recognizedPersons = [];
-      const lines = pythonOutput.split("\n");
-      lines.forEach((line) => {
-        if (line.includes("Attendance marked successfully for")) {
-          const idx = line.indexOf("Attendance marked successfully for");
-          const namePart = line
-            .slice(idx + "Attendance marked successfully for".length)
-            .trim();
-          if (namePart)
-            recognizedPersons.push(namePart.replace(/\.$/, "").trim());
-        } else if (line.includes("✅ Attendance marked successfully for")) {
-          const name = line
-            .split("✅ Attendance marked successfully for")[1]
-            .trim()
-            .replace(/\.$/, "");
-          if (name) recognizedPersons.push(name);
-        }
-      });
-
-      return res.json({
-        success: true,
-        status: "marked",
-        message: "Your attendance has been marked successfully!",
-        recognized_persons: recognizedPersons,
-        filename: req.file.filename,
-        python_output: pythonOutput, // raw terminal-like output (exact)
-        python_error: pythonError,
-        summary: {
-          detectedFaces: parseInt(
-            pythonOutput.match(/Detected Faces:\s*(\d+)/)?.[1] || 0
-          ),
-          newEntries: parseInt(
-            pythonOutput.match(/New Attendance Entries:\s*(\d+)/)?.[1] || 0
-          ),
-          unknownFaces: parseInt(
-            pythonOutput.match(/Unknown Faces:\s*(\d+)/)?.[1] || 0
-          ),
-        },
-      });
-    }
-
-    // If already marked
-    else if (includesPhrase(pythonOutput, alreadyMarkedVariants)) {
-      const alreadyMarked = [];
-      const lines = pythonOutput.split("\n");
-      lines.forEach((line) => {
-        const mEmoji = line.match(
-          /🕒\s*(.+?)'s attendance is already marked for today/i
-        );
-        const mPlain = line.match(
-          /(.+?)'s attendance is already marked for today/i
-        );
-        if (mEmoji && mEmoji[1]) alreadyMarked.push(mEmoji[1].trim());
-        else if (mPlain && mPlain[1]) alreadyMarked.push(mPlain[1].trim());
-      });
-
-      let persons = alreadyMarked;
-      if (persons.length === 0) {
-        const recogMatches =
-          pythonOutput.match(/✅\s*Recognized:\s*([^\n(]+)/g) || [];
-        persons = recogMatches.map((m) =>
-          m.replace(/✅\s*Recognized:\s*/, "").trim()
-        );
-      }
-      if (persons.length === 0) {
-        const fallback = pythonOutput.match(
-          /([A-Za-z0-9_]+)'s attendance is already marked/i
-        );
-        if (fallback && fallback[1]) persons = [fallback[1]];
+      // Check for New Attendance (📝 Attendance Recorded: Name)
+      if (trimmed.includes("Attendance Recorded:")) {
+        const name = trimmed.split(":")[1].trim();
+        if (name) newAttendance.push(name);
       }
 
-      const messageText =
-        persons.length > 0
-          ? `${persons.join(", ")}'s attendance is already marked for today.`
-          : "Attendance is already marked for today.";
+      // Check for Already Marked (ℹ️ Name is already marked...)
+      else if (trimmed.includes("is already marked for today")) {
+        // Extract name from start of line up to "is already"
+        // remove "ℹ️" and extra spaces
+        const namePart = trimmed.split("is already marked")[0];
+        const name = namePart.replace("ℹ️", "").trim();
+        if (name) alreadyMarked.push(name);
+      }
 
-      return res.json({
-        success: true,
-        status: "already_marked",
-        message: messageText,
-        recognized_persons: persons,
-        filename: req.file.filename,
-        python_output: pythonOutput,
-        python_error: pythonError,
-        summary: {
-          detectedFaces: parseInt(
-            pythonOutput.match(/Detected Faces:\s*(\d+)/)?.[1] || 0
-          ),
-          newEntries: parseInt(
-            pythonOutput.match(/New Attendance Entries:\s*(\d+)/)?.[1] || 0
-          ),
-          unknownFaces: parseInt(
-            pythonOutput.match(/Unknown Faces:\s*(\d+)/)?.[1] || 0
-          ),
-        },
-      });
+      // Check for No Face
+      else if (
+        trimmed.includes("No human faces detected") ||
+        trimmed.includes("No face detected")
+      ) {
+        noFaceDetected = true;
+      }
+
+      // Check for Unknown
+      else if (trimmed.includes("Unknown Subject Detected")) {
+        unknownCount++;
+      }
+    });
+
+    // 4. Construct the Chat Message
+    let userMessage = "";
+    let status = "raw";
+
+    if (noFaceDetected) {
+      status = "no_face";
+      userMessage =
+        "⚠️ I couldn't find a face in that photo. Please try again with a clearer selfie.";
+    } else if (
+      newAttendance.length === 0 &&
+      alreadyMarked.length === 0 &&
+      unknownCount > 0
+    ) {
+      status = "unknown";
+      userMessage =
+        "🚫 Face recognized as 'Unknown'. Please contact admin to register.";
+    } else {
+      const parts = [];
+
+      if (newAttendance.length > 0) {
+        status = "marked";
+        parts.push(
+          `✅ Success! Attendance marked for: ${newAttendance.join(", ")}.`
+        );
+      }
+
+      if (alreadyMarked.length > 0) {
+        // If status wasn't 'marked' yet, set it to 'already_marked'
+        if (status === "raw") status = "already_marked";
+        parts.push(
+          `🕒 Welcome back! Attendance already marked for: ${alreadyMarked.join(
+            ", "
+          )}.`
+        );
+      }
+
+      if (unknownCount > 0) {
+        parts.push(
+          `(Plus ${unknownCount} unknown face${
+            unknownCount > 1 ? "s" : ""
+          } detected).`
+        );
+      }
+
+      userMessage = parts.join("\n");
     }
 
-    // Unknown face
-    else if (includesPhrase(pythonOutput, unknownVariant)) {
-      return res.json({
-        success: true,
-        status: "unknown",
-        message:
-          "The face in the photo is not recognized in our system. Please try again or contact the administration.",
-        filename: req.file.filename,
-        python_output: pythonOutput,
-        python_error: pythonError,
-        summary: {
-          detectedFaces: parseInt(
-            pythonOutput.match(/Detected Faces:\s*(\d+)/)?.[1] || 0
-          ),
-          newEntries: parseInt(
-            pythonOutput.match(/New Attendance Entries:\s*(\d+)/)?.[1] || 0
-          ),
-          unknownFaces: parseInt(
-            pythonOutput.match(/Unknown Faces:\s*(\d+)/)?.[1] || 0
-          ),
-        },
-      });
+    // Fallback if message is still empty
+    if (!userMessage) {
+      userMessage = "Process completed, but no status change detected.";
     }
 
-    // No faces
-    else if (includesPhrase(pythonOutput, noFaceVariant)) {
-      return res.json({
-        success: true,
-        status: "no_face",
-        message:
-          "No face detected in the image! Please try again with a clearer photo.",
-        filename: req.file.filename,
-        python_output: pythonOutput,
-        python_error: pythonError,
-        summary: {
-          detectedFaces: 0,
-          newEntries: 0,
-          unknownFaces: 0,
-        },
-      });
-    }
-
-    // Fallback - still return raw text so client can exactly show terminal output
-    else {
-      return res.json({
-        success: true,
-        status: "raw",
-        message: "Image processed. Raw python output included.",
-        filename: req.file.filename,
-        python_output: pythonOutput,
-        python_error: pythonError,
-      });
-    }
+    // 5. Send Response
+    res.json({
+      success: true,
+      status: status,
+      message: userMessage,
+      recognized_persons: [...newAttendance, ...alreadyMarked],
+      python_output: rawOutput, // Send raw for debugging if needed
+    });
   });
 });
 
