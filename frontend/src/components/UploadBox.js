@@ -1,6 +1,4 @@
 // frontend/src/components/UploadBox.js
-// Redesigned with unique gradients for each component
-
 import { useState, useRef, useEffect } from "react";
 import "../css/UploadBox.css";
 
@@ -9,6 +7,7 @@ export default function UploadBox() {
   const [preview, setPreview] = useState(null);
   const [file, setFile] = useState(null);
   const [isUploading, setIsUploading] = useState(false);
+  // Initial messages for demonstration - removed the second static message
   const [messages, setMessages] = useState([
     {
       id: 1,
@@ -23,10 +22,9 @@ export default function UploadBox() {
 
   const fileInputRef = useRef(null);
   const photoInputRef = useRef(null);
-  const cameraInputRef = useRef(null);
   const messagesEndRef = useRef(null);
+  const menuRef = useRef(null);
 
-  // Function to get current time in 12-hour format
   function getCurrentTime() {
     return new Date().toLocaleTimeString([], {
       hour: "2-digit",
@@ -35,16 +33,29 @@ export default function UploadBox() {
     });
   }
 
-  // Auto-scroll to bottom when messages change
   useEffect(() => {
     scrollToBottom();
-  }, [messages, preview]);
+  }, [messages, preview, showOptions]);
+
+  // Close menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (menuRef.current && !menuRef.current.contains(event.target)) {
+        // Don't close if clicking on attach button
+        if (!event.target.closest(".attach-btn")) {
+          setShowOptions(false);
+        }
+      }
+    };
+
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
-  // Simulate bot response
   const addBotResponse = (message, delay = 1500) => {
     setTyping(true);
     setTimeout(() => {
@@ -62,19 +73,11 @@ export default function UploadBox() {
     }, delay);
   };
 
-  // Handle file selection
   const handleFileChange = (e) => {
     const selectedFile = e.target.files[0];
     if (selectedFile) {
       if (!selectedFile.type.startsWith("image/")) {
-        addBotResponse("Please select an image file (JPG, PNG, or GIF).");
-        return;
-      }
-
-      if (selectedFile.size > 10 * 1024 * 1024) {
-        addBotResponse(
-          "File size too large. Please select an image under 10MB."
-        );
+        addBotResponse("Please select an image file (JPG, PNG).", 500);
         return;
       }
 
@@ -83,7 +86,6 @@ export default function UploadBox() {
       setFile(selectedFile);
       setShowOptions(false);
 
-      // Add user message with preview
       setMessages((prev) => [
         ...prev,
         {
@@ -96,58 +98,34 @@ export default function UploadBox() {
         },
       ]);
 
-      addBotResponse("Great! Click the send button to mark your attendance.");
-    }
-  };
-
-  // Handle camera capture
-  const handleCameraCapture = () => {
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-      addBotResponse("Opening camera... Please allow camera permissions.");
-
-      // For demo, we'll simulate camera with file input
+      // Auto-add bot response when photo is uploaded
       setTimeout(() => {
-        cameraInputRef.current?.click();
+        addBotResponse("Great! Click the send button to mark your attendance.");
       }, 1000);
-    } else {
-      addBotResponse(
-        "Camera not supported in this browser. Please use photo upload instead."
-      );
     }
   };
 
-  // Remove uploaded preview
   const handleRemove = () => {
-    if (preview) {
-      URL.revokeObjectURL(preview);
-    }
+    if (preview) URL.revokeObjectURL(preview);
     setPreview(null);
     setFile(null);
-
-    // Remove the photo message
-    setMessages((prev) => prev.filter((msg) => msg.content !== "photo"));
-
-    addBotResponse("Photo removed. You can upload a new one.");
+    setMessages((prev) =>
+      prev.filter((msg) => msg.content !== "photo" && msg.imageUrl !== preview)
+    );
   };
 
-  // Send photo to backend
   const handleSend = async () => {
-    if (!file) {
-      addBotResponse("Please select a photo first.");
-      return;
-    }
+    if (!file) return;
 
     setIsUploading(true);
-
-    // Add sending message
     const sendingMessageId = Date.now();
+
     setMessages((prev) => [
       ...prev,
       {
         id: sendingMessageId,
         type: "sent",
-        content:
-          "Photo sent successfully. Please wait, processing face recognition...",
+        content: "Sending photo...",
         time: getCurrentTime(),
         avatar: "👤",
         status: "sending",
@@ -155,190 +133,65 @@ export default function UploadBox() {
     ]);
 
     try {
-      // Create FormData and append the file
       const formData = new FormData();
       formData.append("photo", file);
 
-      // Send to your backend
       const response = await fetch("http://localhost:5000/upload", {
         method: "POST",
         body: formData,
       });
 
       const data = await response.json();
-
-      // Remove the sending message
       setMessages((prev) => prev.filter((msg) => msg.id !== sendingMessageId));
 
       if (data.success) {
-        // Handle different status cases
         let systemMessage = "";
-        let botResponse = "";
 
         switch (data.status) {
-          case "marked": {
-            // include recognized person names if available
-            const names =
-              data.recognized_persons && data.recognized_persons.length
-                ? data.recognized_persons.join(", ")
-                : null;
-
-            systemMessage = `✅ ${data.message}${
-              names ? " (" + names + ")" : ""
-            }`;
-            botResponse = "Attendance recorded for today. Thank you!";
-
-            // Add system message
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: Date.now() + 1,
-                type: "system",
-                content: systemMessage,
-                time: getCurrentTime(),
-              },
-            ]);
+          case "marked":
+          case "already_marked":
+            systemMessage = data.message;
             break;
-          }
+          case "unknown":
+          case "no_face":
+          default:
+            systemMessage = data.message;
+            break;
+        }
 
-          case "already_marked": {
-            // Use recognized_persons array if present, otherwise fall back to recognized_name
-            const persons =
-              data.recognized_persons && data.recognized_persons.length
-                ? data.recognized_persons
-                : data.recognized_name
-                ? [data.recognized_name]
-                : [];
-
-            if (persons.length > 0) {
-              // Add one system message per person for clarity (matches your existing UI)
-              persons.forEach((p, idx) => {
+        if (systemMessage) {
+          const parts = systemMessage.split("\n");
+          parts.forEach((part, index) => {
+            if (part.trim()) {
+              setTimeout(() => {
                 setMessages((prev) => [
                   ...prev,
                   {
-                    id: Date.now() + 10 + idx,
+                    id: Date.now() + index,
                     type: "system",
-                    content: `🕒 ${p}'s attendance is already marked for today.`,
+                    content: part,
                     time: getCurrentTime(),
                   },
                 ]);
-              });
-            } else {
-              // Fallback generic message
-              setMessages((prev) => [
-                ...prev,
-                {
-                  id: Date.now() + 1,
-                  type: "system",
-                  content: `🕒 ${data.message}`,
-                  time: getCurrentTime(),
-                },
-              ]);
+              }, index * 250);
             }
-
-            botResponse =
-              "Your attendance has already been recorded for today.";
-            break;
-          }
-
-          case "unknown":
-            systemMessage = `❌ ${data.message}`;
-            botResponse =
-              "Please make sure you are a registered student or contact the administration for assistance.";
-
-            // Add system message
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: Date.now() + 1,
-                type: "system",
-                content: systemMessage,
-                time: getCurrentTime(),
-              },
-            ]);
-            break;
-
-          case "no_face":
-            systemMessage = `⚠️ ${data.message}`;
-            botResponse =
-              "Please try again with a clearer photo that shows your face clearly.";
-
-            // Add system message
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: Date.now() + 1,
-                type: "system",
-                content: systemMessage,
-                time: getCurrentTime(),
-              },
-            ]);
-            break;
-
-          default:
-            systemMessage = `❓ ${data.message}`;
-            botResponse =
-              "There was an issue processing your attendance. Please try again.";
-
-            // Add system message
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: Date.now() + 1,
-                type: "system",
-                content: systemMessage,
-                time: getCurrentTime(),
-              },
-            ]);
+          });
         }
 
-        // Add summary if available
-        if (data.summary) {
-          const summaryMessage = `📋 Summary:\n• Detected Faces: ${data.summary.detectedFaces}\n• New Attendance Entries: ${data.summary.newEntries}\n• Unknown Faces: ${data.summary.unknownFaces}`;
-
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: Date.now() + 2,
-              type: "system",
-              content: summaryMessage,
-              time: getCurrentTime(),
-            },
-          ]);
-        }
-
-        // Add bot confirmation after the system messages are enqueued
-        addBotResponse(botResponse, 1000);
-
-        // Reset after successful upload for marked and already_marked cases
         if (data.status === "marked" || data.status === "already_marked") {
           setTimeout(() => {
-            if (preview) {
-              URL.revokeObjectURL(preview);
-            }
-            setPreview(null);
-            setFile(null);
-            setMessages((prev) =>
-              prev.filter((msg) => msg.content !== "photo")
-            );
-          }, 4000);
+            handleRemove();
+          }, 2000);
         }
       } else {
         throw new Error(data.message || "Upload failed");
       }
     } catch (err) {
-      console.error("Upload error:", err);
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: Date.now(),
-          type: "system",
-          content: "❌ Failed to process attendance. Please try again.",
-          time: getCurrentTime(),
-        },
-      ]);
+      console.error(err);
+      setMessages((prev) => prev.filter((msg) => msg.id !== sendingMessageId));
       addBotResponse(
-        "There was an error processing your attendance. Please try uploading the photo again."
+        "❌ Could not connect to the server. Please try again.",
+        500
       );
     } finally {
       setIsUploading(false);
@@ -346,222 +199,163 @@ export default function UploadBox() {
   };
 
   return (
-    <div className="nexus-container">
-      {/* Animated Background Elements */}
-      <div className="nexus-bg-element bg-element-1"></div>
-      <div className="nexus-bg-element bg-element-2"></div>
-      <div className="nexus-bg-element bg-element-3"></div>
+    <div className="glass-container">
+      <div className="ambient-light one"></div>
+      <div className="ambient-light two"></div>
+      <div className="ambient-light three"></div>
 
-      <div className="nexus-chat-card">
-        {/* Header with Unique Gradient */}
-        <div className="nexus-header">
-          <div className="header-content">
-            <div className="nexus-avatar">
-              <div className="avatar-core">
-                <span className="avatar-icon">📸</span>
-              </div>
-              <div className="nexus-status"></div>
+      <div className="chat-interface">
+        {/* Header */}
+        <div className="chat-header">
+          <div className="header-info">
+            <div className="status-indicator online"></div>
+            <div>
+              <h2>AI Attendance Bot</h2>
+              <p>Active now</p>
             </div>
-            <div className="nexus-title">
-              <h2>Attendance System</h2>
-              <p>Face recognition attendance</p>
-            </div>
-            <div className="nexus-actions">
-              <button className="action-btn nexus-btn">
-                <span>⚡</span>
-              </button>
-            </div>
+          </div>
+          <div className="header-decoration">
+            <div className="decoration-dot"></div>
+            <div className="decoration-dot"></div>
+            <div className="decoration-dot"></div>
           </div>
         </div>
 
-        {/* Messages Area */}
-        <div className="nexus-messages">
-          {messages.map((message) => (
-            <div key={message.id} className={`nexus-message ${message.type}`}>
-              {message.type !== "system" && (
-                <div className="message-avatar nexus-avatar-bubble">
-                  <div className="avatar-glow">{message.avatar}</div>
-                </div>
+        {/* Messages */}
+        <div className="chat-messages">
+          {messages.map((msg) => (
+            <div key={msg.id} className={`message-row ${msg.type}`}>
+              {msg.type !== "system" && (
+                <div className="avatar">{msg.avatar}</div>
               )}
-              <div className={`message-bubble ${message.type}-bubble`}>
-                {message.content === "photo" ? (
-                  <div className="nexus-preview">
-                    <div className="preview-container">
-                      <img src={message.imageUrl} alt="Uploaded" />
-                      <div className="preview-actions">
-                        <button
-                          className="nexus-remove-btn"
-                          onClick={handleRemove}
-                        >
-                          <span>×</span>
-                        </button>
-                      </div>
-                    </div>
+
+              <div className={`bubble ${msg.type}`}>
+                {msg.content === "photo" ? (
+                  <div className="photo-preview-bubble">
+                    <img src={msg.imageUrl} alt="Upload" />
+                    {file && preview === msg.imageUrl && !isUploading && (
+                      <button
+                        onClick={handleRemove}
+                        className="remove-photo-btn"
+                      >
+                        ×
+                      </button>
+                    )}
                   </div>
-                ) : message.status === "sending" ? (
-                  <div className="nexus-sending">
-                    <span>{message.content}</span>
-                    <div className="nexus-typing">
-                      <span></span>
-                      <span></span>
-                      <span></span>
+                ) : msg.status === "sending" ? (
+                  <div className="typing-indicator-bubble">
+                    <div className="dots">
+                      <span />
+                      <span />
+                      <span />
                     </div>
                   </div>
                 ) : (
-                  <p style={{ whiteSpace: "pre-line" }}>{message.content}</p>
+                  <div className="text-content">{msg.content}</div>
                 )}
-                <span className="nexus-time">{message.time}</span>
-                {message.type === "sent" && !message.status && (
-                  <div className="nexus-status-sent">✓</div>
-                )}
+                {msg.time && <span className="timestamp">{msg.time}</span>}
               </div>
             </div>
           ))}
 
           {typing && (
-            <div className="nexus-message received">
-              <div className="message-avatar nexus-avatar-bubble">
-                <div className="avatar-glow">🤖</div>
-              </div>
-              <div className="message-bubble received-bubble">
-                <div className="nexus-typing-indicator">
-                  <span></span>
-                  <span></span>
-                  <span></span>
+            <div className="message-row received">
+              <div className="avatar">🤖</div>
+              <div className="bubble received typing">
+                <div className="dots">
+                  <span />
+                  <span />
+                  <span />
                 </div>
               </div>
             </div>
           )}
-
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Input Area with Unique Gradient */}
-        <div className="nexus-input-section">
-          <div className="nexus-input-group">
-            <button
-              className={`nexus-attach ${showOptions ? "active" : ""}`}
-              onClick={() => setShowOptions(!showOptions)}
-              title="Attach files"
-            >
-              <div className="attach-icon">
-                <span>+</span>
-              </div>
-            </button>
-
-            <div className="nexus-input-wrapper">
-              {preview ? (
-                <div className="nexus-preview-message">
-                  <div className="preview-info">
-                    <div className="preview-icon">
-                      <span>🖼️</span>
-                    </div>
-                    <span>Photo ready for attendance</span>
-                  </div>
-                  <button className="nexus-change-btn" onClick={handleRemove}>
-                    Change
-                  </button>
-                </div>
-              ) : (
-                <input
-                  type="text"
-                  placeholder="Type a message or attach a photo..."
-                  className="nexus-input"
-                  onFocus={() => setShowOptions(false)}
-                />
-              )}
+        {/* Input Area */}
+        <div className="chat-input-area">
+          {/* Enhanced Attachment Menu - Only Photo Option */}
+          <div
+            ref={menuRef}
+            className={`attachment-menu ${showOptions ? "open" : ""}`}
+          >
+            <div className="menu-header">
+              <h3>Upload Photo</h3>
+              <button
+                className="menu-close-btn"
+                onClick={() => setShowOptions(false)}
+                aria-label="Close menu"
+              >
+                ×
+              </button>
             </div>
 
-            {preview ? (
+            <div className="menu-options-grid">
+              {/* Only Photo Library Option */}
               <button
-                className="nexus-send-btn"
-                onClick={handleSend}
-                disabled={isUploading}
+                onClick={() => photoInputRef.current.click()}
+                className="menu-option"
               >
-                {isUploading ? (
-                  <div className="nexus-spinner"></div>
-                ) : (
-                  <span>↑</span>
-                )}
+                <div className="glossy-icon photo">
+                  <div className="icon-inner">📷</div>
+                </div>
+                <div className="option-text">
+                  <span className="option-title">Photo Library</span>
+                  <span className="option-subtitle">Choose from gallery</span>
+                </div>
               </button>
+            </div>
+          </div>
+
+          {/* Attach Button */}
+          <button
+            className={`attach-btn ${showOptions ? "active" : ""}`}
+            onClick={() => setShowOptions(!showOptions)}
+            aria-label={showOptions ? "Close menu" : "Open menu"}
+          >
+            <span className="plus-icon">+</span>
+          </button>
+
+          <div className="input-wrapper">
+            {preview ? (
+              <div className="mini-preview-bar">
+                <div className="preview-info">
+                  <div className="preview-icon">🖼️</div>
+                  <span>Image ready to send</span>
+                </div>
+                <button onClick={handleRemove} disabled={isUploading}>
+                  Cancel
+                </button>
+              </div>
             ) : (
-              <button className="nexus-send-btn disabled">
-                <span>↑</span>
-              </button>
+              <input
+                type="text"
+                placeholder="Upload a photo to start..."
+                readOnly
+                onClick={() => setShowOptions(true)}
+              />
             )}
           </div>
 
-          {/* Attachment Options with Unique Gradient */}
-          {showOptions && (
-            <div className="nexus-options-panel">
-              <div className="options-header">
-                <h4>Send Attachment</h4>
-                <button
-                  className="nexus-close-btn"
-                  onClick={() => setShowOptions(false)}
-                >
-                  ×
-                </button>
-              </div>
-              <div className="nexus-options-grid">
-                <button
-                  className="nexus-option photo-option"
-                  onClick={() => photoInputRef.current.click()}
-                >
-                  <div className="option-icon">
-                    <span>📷</span>
-                  </div>
-                  <span>Photo</span>
-                </button>
-
-                <button
-                  className="nexus-option file-option"
-                  onClick={() => fileInputRef.current.click()}
-                >
-                  <div className="option-icon">
-                    <span>📁</span>
-                  </div>
-                  <span>File</span>
-                </button>
-
-                <button
-                  className="nexus-option camera-option"
-                  onClick={handleCameraCapture}
-                >
-                  <div className="option-icon">
-                    <span>🎥</span>
-                  </div>
-                  <span>Camera</span>
-                </button>
-              </div>
-            </div>
-          )}
+          <button
+            className={`send-btn ${!file || isUploading ? "disabled" : ""}`}
+            onClick={handleSend}
+            disabled={!file || isUploading}
+          >
+            {isUploading ? <div className="spinner"></div> : "➤"}
+          </button>
         </div>
-
-        {/* Hidden inputs */}
-        <input
-          type="file"
-          accept="image/*,video/*"
-          ref={photoInputRef}
-          style={{ display: "none" }}
-          onChange={handleFileChange}
-        />
-        <input
-          type="file"
-          accept="image/*"
-          ref={fileInputRef}
-          style={{ display: "none" }}
-          onChange={handleFileChange}
-        />
-        <input
-          type="file"
-          accept="image/*"
-          capture="environment"
-          ref={cameraInputRef}
-          style={{ display: "none" }}
-          onChange={handleFileChange}
-        />
       </div>
+
+      {/* Hidden Inputs - Only photo input remains */}
+      <input
+        type="file"
+        accept="image/*"
+        ref={photoInputRef}
+        hidden
+        onChange={handleFileChange}
+      />
     </div>
   );
 }
