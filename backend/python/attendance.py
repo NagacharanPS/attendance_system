@@ -1,202 +1,231 @@
-# --- backend/python/attendance.py ---
-# Updated attendance.py to accept uploaded filename and print consistent, parseable messages.
-
 # imports
-from deepface import DeepFace
-import cv2
 import os
+import cv2
 import numpy as np
 import pandas as pd
+import pickle
 from datetime import datetime
-import sys
 import warnings
+import sys
+import subprocess
+
+# Suppress TensorFlow logs
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
 warnings.filterwarnings('ignore')
 
+# Import DeepFace
+try:
+    from deepface import DeepFace
+    DEEPFACE_AVAILABLE = True
+except ImportError:
+    print("📦 DeepFace not found. Installing...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "deepface"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "tf-keras"])
+    from deepface import DeepFace
+    DEEPFACE_AVAILABLE = True
 
+# ===============================
+# CONFIGURATION
+# ===============================
 class Config:
-    BASE_DIR = os.path.abspath(os.path.dirname(__file__))  # python folder
-    UPLOADS_DIR = f"{BASE_DIR}/uploads"
-    KNOWN_FACES_DIR = f"{BASE_DIR}/known_faces"
-    ATTENDANCE_FILE = f"{BASE_DIR}/attendance.xlsx"
-    MODEL_NAME = "VGG-Face"
-    DETECTOR_BACKEND = "opencv"
-    SIMILARITY_THRESHOLD = 0.6
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    UPLOADS_DIR = os.path.join(BASE_DIR, 'uploads')
+    KNOWN_FACES_DIR = os.path.join(BASE_DIR, 'known_faces')
+    ATTENDANCE_FILE = os.path.join(BASE_DIR, 'attendance.xlsx')
+    DB_FILE = os.path.join(BASE_DIR, 'known_faces_encodings.pkl')
 
+    # Facenet512 is accurate.
+    MODEL_NAME = "Facenet512" 
+    
+    # --- FIX 1: CHANGE DETECTOR ---
+    # 'opencv' is too glitchy (sees faces in walls).
+    # 'ssd' is much more stable and still fast.
+    DETECTOR_BACKEND = "ssd" 
+    
+    # Similarity Threshold (0.80 - 0.85 is good for Facenet512)
+    SIMILARITY_THRESHOLD = 0.80
 
-# face recognition logic
-class FaceRecognition:
+class FaceRecognitionEngine:
     def __init__(self, config):
-        self.cfg = config
-        self.known_faces = []
-        self._setup_folders()
-        self._load_known_faces()
+        self.config = config
+        self.known_faces_db = []
+        self._ensure_directories()
+        self._load_or_build_database()
+    
+    def _ensure_directories(self):
+        os.makedirs(self.config.UPLOADS_DIR, exist_ok=True)
+        os.makedirs(self.config.KNOWN_FACES_DIR, exist_ok=True)
+    
+    def _load_or_build_database(self):
+        if os.path.exists(self.config.DB_FILE):
+            print(f"⚡ Loading database from cache...")
+            try:
+                with open(self.config.DB_FILE, 'rb') as f:
+                    self.known_faces_db = pickle.load(f)
+                print(f"✅ Loaded {len(self.known_faces_db)} known people.")
+                return
+            except Exception:
+                print(f"⚠️ Cache corrupted. Rebuilding...")
 
-    def _setup_folders(self):
-        os.makedirs(self.cfg.UPLOADS_DIR, exist_ok=True)
-        os.makedirs(self.cfg.KNOWN_FACES_DIR, exist_ok=True)
+        self._build_known_faces_database()
 
-    def _load_known_faces(self):
-        print("Loading known faces...")
-        for person in os.listdir(self.cfg.KNOWN_FACES_DIR):
-            person_path = os.path.join(self.cfg.KNOWN_FACES_DIR, person)
-            if not os.path.isdir(person_path):
-                continue
+    def _build_known_faces_database(self):
+        print("🔨 Building known faces database...")
+        new_db = []
+        
+        if not os.path.exists(self.config.KNOWN_FACES_DIR):
+            return
+        
+        for person_name in os.listdir(self.config.KNOWN_FACES_DIR):
+            person_path = os.path.join(self.config.KNOWN_FACES_DIR, person_name)
+            
+            if os.path.isdir(person_path):
+                print(f"  👤 Encoding: {person_name}")
+                for filename in os.listdir(person_path):
+                    if filename.lower().endswith(('.jpg', '.jpeg', '.png')):
+                        img_path = os.path.join(person_path, filename)
+                        try:
+                            # We use enforce_detection=False here just to ensure we capture
+                            # the known faces even if the crop is weird.
+                            embeddings = DeepFace.represent(
+                                img_path=img_path,
+                                model_name=self.config.MODEL_NAME,
+                                detector_backend=self.config.DETECTOR_BACKEND,
+                                enforce_detection=False, 
+                                align=True
+                            )
+                            for emb in embeddings:
+                                new_db.append({
+                                    'name': person_name,
+                                    'embedding': emb['embedding']
+                                })
+                        except:
+                            pass
+        
+        self.known_faces_db = new_db
+        with open(self.config.DB_FILE, 'wb') as f:
+            pickle.dump(self.known_faces_db, f)
+        print(f"✅ Database built and saved.")
 
-            for file in os.listdir(person_path):
-                if not file.lower().endswith(('.jpg', '.jpeg', '.png')):
-                    continue
-
-                img_path = os.path.join(person_path, file)
-                try:
-                    rep = DeepFace.represent(
-                        img_path=img_path,
-                        model_name=self.cfg.MODEL_NAME,
-                        detector_backend=self.cfg.DETECTOR_BACKEND,
-                        enforce_detection=False
-                    )
-                    # DeepFace.represent returns a list of face dicts sometimes; handle it
-                    if rep and isinstance(rep, list) and len(rep) > 0 and 'embedding' in rep[0]:
-                        self.known_faces.append({
-                            'name': person,
-                            'embedding': rep[0]['embedding']
-                        })
-                except Exception:
-                    print(f"❌ Could not process {file}")
-                    continue
-
-        print(f"Loaded {len(self.known_faces)} known face(s).")
-
-    def get_latest_upload(self):
-        files = [f for f in os.listdir(self.cfg.UPLOADS_DIR)
-                 if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+    def find_latest_uploaded_image(self):
+        files = [f for f in os.listdir(self.config.UPLOADS_DIR) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
         if not files:
-            raise FileNotFoundError("No uploaded images found!")
-
-        files.sort(key=lambda f: os.path.getmtime(os.path.join(self.cfg.UPLOADS_DIR, f)), reverse=True)
-        latest = files[0]
-        print(f"📸 Latest uploaded image: {latest}")
-        return os.path.join(self.cfg.UPLOADS_DIR, latest)
+            raise FileNotFoundError("❌ No uploaded images found.")
+        files.sort(key=lambda f: os.path.getmtime(os.path.join(self.config.UPLOADS_DIR, f)), reverse=True)
+        return os.path.join(self.config.UPLOADS_DIR, files[0])
 
     def recognize_faces(self, image_path):
-        print("⚙️ Recognizing faces...")
-        img = cv2.imread(image_path)
-        if img is None:
-            raise ValueError("Invalid image file")
+        print(f"⚙️  Analyzing image: {os.path.basename(image_path)}")
+        
+        try:
+            # --- FIX 2: ENFORCE DETECTION = TRUE ---
+            # This ensures that if no face is found, it throws an error immediately
+            # instead of trying to process the wall/chair as a face.
+            target_embeddings = DeepFace.represent(
+                img_path=image_path,
+                model_name=self.config.MODEL_NAME,
+                detector_backend=self.config.DETECTOR_BACKEND,
+                enforce_detection=True, 
+                align=True
+            )
+        except ValueError:
+            # This catches "Face could not be detected"
+            print("⚠️  No face detected in the image.")
+            return []
+        except Exception as e:
+            print(f"⚠️  Error during detection: {e}")
+            return []
 
-        results = DeepFace.represent(
-            img_path=image_path,
-            model_name=self.cfg.MODEL_NAME,
-            detector_backend=self.cfg.DETECTOR_BACKEND,
-            enforce_detection=False
-        )
-
-        # results may be a list of dicts each with embedding
-        recognized = []
-        if not results:
-            return recognized
-
-        for face in results:
-            emb = np.array(face['embedding'])
-            name, confidence = self._match_face(emb)
-            recognized.append({'name': name, 'confidence': confidence})
-
-            if name != "Unknown":
-                # print recognitions consistently; server parses "✅ Recognized: NAME (xx.xx%)"
-                print(f"✅ Recognized: {name} ({confidence * 100:.2f}%)")
+        results = []
+        for face_data in target_embeddings:
+            name, confidence = self._match_face(face_data['embedding'])
+            
+            # --- LOGGING ---
+            if name == "Unknown":
+                # We do NOT add unknowns to the results list we return
+                # So they are completely ignored.
+                print(f"  ⛔ Unknown Face Detected (Score: {confidence:.2%}) -> IGNORING")
             else:
-                print("❓ Unknown face detected")
+                print(f"  ✅ MATCH FOUND: {name} (Score: {confidence:.2%})")
+                results.append({'name': name, 'confidence': confidence})
 
-        return recognized
+        return results
 
-    def _match_face(self, emb):
-        if not self.known_faces:
+    def _match_face(self, source_emb):
+        if not self.known_faces_db:
             return "Unknown", 0.0
-
-        best_name, best_score = "Unknown", 0.0
-
-        for known in self.known_faces:
-            known_emb = np.array(known['embedding'])
-            similarity = np.dot(emb, known_emb) / (np.linalg.norm(emb) * np.linalg.norm(known_emb))
-            confidence = (similarity + 1) / 2
-
-            if confidence > best_score and confidence > self.cfg.SIMILARITY_THRESHOLD:
-                best_score, best_name = confidence, known['name']
-
+        
+        best_name = "Unknown"
+        best_score = 0.0
+        
+        src = np.array(source_emb)
+        
+        for known in self.known_faces_db:
+            target = np.array(known['embedding'])
+            score = np.dot(src, target) / (np.linalg.norm(src) * np.linalg.norm(target))
+            score = (score + 1) / 2
+            
+            if score > best_score:
+                best_score = score
+                if score > self.config.SIMILARITY_THRESHOLD:
+                    best_name = known['name']
+        
         return best_name, best_score
 
-    def mark_attendance(self, faces):
-        # load or create attendance file
-        df = pd.read_excel(self.cfg.ATTENDANCE_FILE) if os.path.exists(self.cfg.ATTENDANCE_FILE) \
-             else pd.DataFrame(columns=["Name", "Date", "Time", "Confidence"])
+    def mark_attendance(self, recognized_faces):
+        if not recognized_faces:
+            print("ℹ️  No valid attendance to mark.")
+            return 0
+            
+        if os.path.exists(self.config.ATTENDANCE_FILE):
+            try:
+                df = pd.read_excel(self.config.ATTENDANCE_FILE)
+            except:
+                df = pd.DataFrame(columns=["Name", "Date", "Time", "Confidence"])
+        else:
+            df = pd.DataFrame(columns=["Name", "Date", "Time", "Confidence"])
 
         now = datetime.now()
-        date, time = now.strftime("%Y-%m-%d"), now.strftime("%H:%M:%S")
-        new_entries = 0
-
-        for f in faces:
-            if f['name'] == "Unknown":
-                continue
-
-            already_marked = df[(df['Name'] == f['name']) & (df['Date'] == date)]
-            if not already_marked.empty:
-                # server checks for "'s attendance is already marked for today"
-                print(f"🕒 {f['name']}'s attendance is already marked for today.")
-                continue
-
-            df.loc[len(df)] = [f['name'], date, time, f"{f['confidence']:.2%}"]
-            new_entries += 1
-            # server checks for "✅ Attendance marked successfully for"
-            print(f"✅ Attendance marked successfully for {f['name']}.")
-
-        df.to_excel(self.cfg.ATTENDANCE_FILE, index=False)
-        return new_entries
-
+        date_str = now.strftime("%Y-%m-%d")
+        time_str = now.strftime("%H:%M:%S")
+        count = 0
+        
+        for face in recognized_faces:
+            name = face['name']
+            if df[(df['Name'] == name) & (df['Date'] == date_str)].empty:
+                new_entry = pd.DataFrame([{
+                    "Name": name, 
+                    "Date": date_str, 
+                    "Time": time_str, 
+                    "Confidence": f"{face['confidence']:.2%}"
+                }])
+                df = pd.concat([df, new_entry], ignore_index=True)
+                count += 1
+                print(f"  📝 Attendance Marked: {name}")
+            else:
+                print(f"  ℹ️  {name} is already marked for today.")
+        
+        df.to_excel(self.config.ATTENDANCE_FILE, index=False)
+        return count
 
 def main():
+    print("🚀 Starting AI Attendance...")
     try:
-        cfg = Config()
-        system = FaceRecognition(cfg)
+        engine = FaceRecognitionEngine(Config())
+        try:
+            img_path = engine.find_latest_uploaded_image()
+        except FileNotFoundError:
+            print("❌ No images in 'uploads' folder.")
+            return
 
-        # Accept an optional filename argument from Node's spawn
-        # If provided, use that file; otherwise fallback to latest upload
-        filename = None
-        if len(sys.argv) >= 2:
-            filename = sys.argv[1]
-
-        if filename:
-            image_path = os.path.join(cfg.UPLOADS_DIR, filename)
-            if not os.path.exists(image_path):
-                print(f"❌ Error: Uploaded file not found: {filename}", file=sys.stderr)
-                sys.exit(1)
-        else:
-            image_path = system.get_latest_upload()
-
-        faces = system.recognize_faces(image_path)
-
-        if not faces:
-            print("⚠️ No faces detected.")
-            # print summary for completeness (server expects these keys)
-            print("\n📋 Summary:")
-            print(f"Detected Faces: 0")
-            print(f"New Attendance Entries: 0")
-            print(f"Unknown Faces: 0")
-            sys.exit(0)
-
-        new_entries = system.mark_attendance(faces)
-        unknown_count = len([f for f in faces if f['name'] == "Unknown"])
-
-        # Print summary lines that server parses
-        print("\n📋 Summary:")
-        print(f"Detected Faces: {len(faces)}")
-        print(f"New Attendance Entries: {new_entries}")
-        print(f"Unknown Faces: {unknown_count}")
-        print(f"💾 Attendance saved to: {cfg.ATTENDANCE_FILE}")
-
-        sys.exit(0)
+        # recognized_faces will be empty if no face is found
+        recognized_faces = engine.recognize_faces(img_path)
+        
+        engine.mark_attendance(recognized_faces)
+        print("✅ Done.")
+            
     except Exception as e:
-        print(f"❌ Error: {e}", file=sys.stderr)
-        sys.exit(1)
-
+        print(f"❌ Error: {e}")
 
 if __name__ == "__main__":
     main()

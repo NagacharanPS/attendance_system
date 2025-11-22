@@ -1,5 +1,5 @@
 // frontend/src/components/UploadBox.js
-// Updated to show each already-marked person as a separate system message (and keep summary)
+// Redesigned with unique gradients for each component
 
 import { useState, useRef, useEffect } from "react";
 import "../css/UploadBox.css";
@@ -346,37 +346,62 @@ export default function UploadBox() {
   };
 
   return (
-    <div className="app-container">
-      <div className="chat-container">
-        <div className="chat-header">
-          <div className="chat-avatar">
-            <div className="avatar">🏢</div>
-            <div className="status-indicator"></div>
-          </div>
-          <div className="chat-info">
-            <h3>Attendance System</h3>
-            <p>Upload your photo to mark attendance</p>
+    <div className="nexus-container">
+      {/* Animated Background Elements */}
+      <div className="nexus-bg-element bg-element-1"></div>
+      <div className="nexus-bg-element bg-element-2"></div>
+      <div className="nexus-bg-element bg-element-3"></div>
+
+      <div className="nexus-chat-card">
+        {/* Header with Unique Gradient */}
+        <div className="nexus-header">
+          <div className="header-content">
+            <div className="nexus-avatar">
+              <div className="avatar-core">
+                <span className="avatar-icon">📸</span>
+              </div>
+              <div className="nexus-status"></div>
+            </div>
+            <div className="nexus-title">
+              <h2>Attendance System</h2>
+              <p>Face recognition attendance</p>
+            </div>
+            <div className="nexus-actions">
+              <button className="action-btn nexus-btn">
+                <span>⚡</span>
+              </button>
+            </div>
           </div>
         </div>
 
-        <div className="chat-messages">
+        {/* Messages Area */}
+        <div className="nexus-messages">
           {messages.map((message) => (
-            <div key={message.id} className={`message ${message.type}`}>
+            <div key={message.id} className={`nexus-message ${message.type}`}>
               {message.type !== "system" && (
-                <div className="message-avatar">{message.avatar}</div>
+                <div className="message-avatar nexus-avatar-bubble">
+                  <div className="avatar-glow">{message.avatar}</div>
+                </div>
               )}
-              <div className="message-content">
+              <div className={`message-bubble ${message.type}-bubble`}>
                 {message.content === "photo" ? (
-                  <div className="upload-preview">
-                    <img src={message.imageUrl} alt="Uploaded" />
-                    <button className="preview-remove" onClick={handleRemove}>
-                      ×
-                    </button>
+                  <div className="nexus-preview">
+                    <div className="preview-container">
+                      <img src={message.imageUrl} alt="Uploaded" />
+                      <div className="preview-actions">
+                        <button
+                          className="nexus-remove-btn"
+                          onClick={handleRemove}
+                        >
+                          <span>×</span>
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 ) : message.status === "sending" ? (
-                  <div className="sending-message">
+                  <div className="nexus-sending">
                     <span>{message.content}</span>
-                    <div className="typing-dots">
+                    <div className="nexus-typing">
                       <span></span>
                       <span></span>
                       <span></span>
@@ -385,19 +410,21 @@ export default function UploadBox() {
                 ) : (
                   <p style={{ whiteSpace: "pre-line" }}>{message.content}</p>
                 )}
-                <span className="message-time">{message.time}</span>
+                <span className="nexus-time">{message.time}</span>
                 {message.type === "sent" && !message.status && (
-                  <div className="message-status">✓</div>
+                  <div className="nexus-status-sent">✓</div>
                 )}
               </div>
             </div>
           ))}
 
           {typing && (
-            <div className="message received">
-              <div className="message-avatar">🤖</div>
-              <div className="message-content">
-                <div className="typing-indicator">
+            <div className="nexus-message received">
+              <div className="message-avatar nexus-avatar-bubble">
+                <div className="avatar-glow">🤖</div>
+              </div>
+              <div className="message-bubble received-bubble">
+                <div className="nexus-typing-indicator">
                   <span></span>
                   <span></span>
                   <span></span>
@@ -409,25 +436,29 @@ export default function UploadBox() {
           <div ref={messagesEndRef} />
         </div>
 
-        <div className="chat-input-area">
-          <div className="input-container">
+        {/* Input Area with Unique Gradient */}
+        <div className="nexus-input-section">
+          <div className="nexus-input-group">
             <button
-              className={`attach-btn ${showOptions ? "active" : ""}`}
+              className={`nexus-attach ${showOptions ? "active" : ""}`}
               onClick={() => setShowOptions(!showOptions)}
               title="Attach files"
             >
-              {/* attach icon (omitted for brevity) */}
-              📎
+              <div className="attach-icon">
+                <span>+</span>
+              </div>
             </button>
 
-            <div className="input-wrapper">
+            <div className="nexus-input-wrapper">
               {preview ? (
-                <div className="preview-message">
+                <div className="nexus-preview-message">
                   <div className="preview-info">
-                    <span className="preview-icon">🖼️</span>
-                    <span>Photo ready to send for attendance</span>
+                    <div className="preview-icon">
+                      <span>🖼️</span>
+                    </div>
+                    <span>Photo ready for attendance</span>
                   </div>
-                  <button className="change-photo-btn" onClick={handleRemove}>
+                  <button className="nexus-change-btn" onClick={handleRemove}>
                     Change
                   </button>
                 </div>
@@ -435,7 +466,7 @@ export default function UploadBox() {
                 <input
                   type="text"
                   placeholder="Type a message or attach a photo..."
-                  className="message-input"
+                  className="nexus-input"
                   onFocus={() => setShowOptions(false)}
                 />
               )}
@@ -443,45 +474,63 @@ export default function UploadBox() {
 
             {preview ? (
               <button
-                className="send-btn"
+                className="nexus-send-btn"
                 onClick={handleSend}
                 disabled={isUploading}
               >
-                {isUploading ? <div className="loading-spinner"></div> : "Send"}
+                {isUploading ? (
+                  <div className="nexus-spinner"></div>
+                ) : (
+                  <span>↑</span>
+                )}
               </button>
             ) : (
-              <button className="send-btn disabled">Send</button>
+              <button className="nexus-send-btn disabled">
+                <span>↑</span>
+              </button>
             )}
           </div>
 
-          {/* Attachment Options */}
+          {/* Attachment Options with Unique Gradient */}
           {showOptions && (
-            <div className="attachment-options">
+            <div className="nexus-options-panel">
               <div className="options-header">
                 <h4>Send Attachment</h4>
                 <button
-                  className="close-options"
+                  className="nexus-close-btn"
                   onClick={() => setShowOptions(false)}
                 >
                   ×
                 </button>
               </div>
-              <div className="options-grid">
+              <div className="nexus-options-grid">
                 <button
-                  className="option-item"
+                  className="nexus-option photo-option"
                   onClick={() => photoInputRef.current.click()}
                 >
+                  <div className="option-icon">
+                    <span>📷</span>
+                  </div>
                   <span>Photo</span>
                 </button>
 
                 <button
-                  className="option-item"
+                  className="nexus-option file-option"
                   onClick={() => fileInputRef.current.click()}
                 >
+                  <div className="option-icon">
+                    <span>📁</span>
+                  </div>
                   <span>File</span>
                 </button>
 
-                <button className="option-item" onClick={handleCameraCapture}>
+                <button
+                  className="nexus-option camera-option"
+                  onClick={handleCameraCapture}
+                >
+                  <div className="option-icon">
+                    <span>🎥</span>
+                  </div>
                   <span>Camera</span>
                 </button>
               </div>
